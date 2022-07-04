@@ -7,7 +7,8 @@ import { Dropdown } from "../../Common/Dropdown/DropdownComponent";
 import Form from "../../Common/Form/Form";
 import { Menu } from "../../Common/Menu/Menu";
 import { Modal } from "../../Common/Modal/ModalPopup";
-
+import axios from 'axios';
+import Swal from 'sweetalert';
 const injector = inject(({ store }) => ({
   store,
   hasSelected: store.currentView?.selected?.hasSelected ?? false,
@@ -39,6 +40,9 @@ export const ActionsButton = injector(observer(({ store, size, hasSelected, ...r
     .sort((a, b) => a.order - b.order);
 
   const invokeAction = (action, destructive) => {
+    // if (action.includes('retrieve_tasks_predictions')) {
+    //   console.log('retrieve tasks predictions');
+    // }
     if (action.dialog) {
       const { type: dialogType, text, form } = action.dialog;
       const dialog = Modal[dialogType] ?? Modal.confirm;
@@ -50,7 +54,28 @@ export const ActionsButton = injector(observer(({ store, size, hasSelected, ...r
         onOk() {
           const body = formRef.current?.assembleFormData({ asJSON: true });
 
-          store.invokeAction(action.id, { body });
+          if (action.id === 'retrieve_tasks_predictions') {
+            axios
+              .get('http://localhost:3535/can_press')
+              .then((response) => {
+                console.log(response);
+                let can_press = response.data.can_press;
+
+                if (can_press === undefined) {
+                  Swal('Someone has just trained or predicted, please wait for a moment');
+                }
+                else if (can_press === true) {
+                  Swal('Predicting Now');
+                  store.invokeAction(action.id, { body });
+                }
+                else {
+                  Swal(`All Gpus are occupied, your prediciton didn't start`);
+                }
+              });
+          }
+          else {
+            store.invokeAction(action.id, { body });
+          }
         },
       });
     } else {
@@ -77,8 +102,13 @@ export const ActionsButton = injector(observer(({ store, size, hasSelected, ...r
   });
 
   return (
-    <Dropdown.Trigger content={<Menu size="compact">{actionButtons}</Menu>} disabled={!hasSelected}>
-      <Button size={size} disabled={!hasSelected} {...rest} >
+    <Dropdown.Trigger content={<Menu size="compact">{actionButtons}</Menu>}
+      disabled={!hasSelected}
+    >
+      <Button size={size}
+        disabled={!hasSelected} 
+        {...rest}
+      >
         {selectedCount > 0 && selectedCount} Tasks
         <FaAngleDown size="16" style={{ marginLeft: 4 }} color="#0077FF" />
       </Button>
