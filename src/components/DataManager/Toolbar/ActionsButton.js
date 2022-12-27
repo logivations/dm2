@@ -9,6 +9,7 @@ import { Menu } from "../../Common/Menu/Menu";
 import { Modal } from "../../Common/Modal/ModalPopup";
 import axios from 'axios';
 import Swal from 'sweetalert';
+import getWebhookUrl from "../../../webhooks";
 const injector = inject(({ store }) => ({
   store,
   hasSelected: store.currentView?.selected?.hasSelected ?? false,
@@ -46,7 +47,16 @@ export const ActionsButton = injector(observer(({ store, size, hasSelected, ...r
     if (action.dialog) {
       const { type: dialogType, text, form } = action.dialog;
       const dialog = Modal[dialogType] ?? Modal.confirm;
+      const webhook_url = getWebhookUrl();
+      const viewId = store.currentView.id;
+      const all = store.currentView.selected.all;
+      let tasks = '';
+      let list = store.currentView.selected.list;
 
+      for (let i = 0; i < list.length; i++){
+        tasks += ','+list[i];
+      }
+      tasks = tasks.substring(1);
       dialog({
         title: destructive ? "Destructive action." : "Confirm action.",
         body: buildDialogContent(text, form, formRef),
@@ -56,21 +66,30 @@ export const ActionsButton = injector(observer(({ store, size, hasSelected, ...r
 
           if (action.id === 'retrieve_tasks_predictions') {
             axios
-              .get('http://localhost:3535/can_press')
+              .get(webhook_url+'/can_press')
               .then((response) => {
                 console.log(response);
                 let can_press = response.data.can_press;
 
-                if (can_press === undefined) {
-                  Swal('Someone has just trained or predicted, please wait for a moment');
+                if (can_press === undefined) { 
+                  Swal('Someone has trained or predicted, please wait for a moment');
                 }
                 else if (can_press === true) {
                   Swal('Predicting Now');
-                  store.invokeAction(action.id, { body });
+                  axios.post(webhook_url + '/predict?view=' + viewId + '&&all=' + all + '&&tasks=' + tasks).then((predictResponse) => {
+                    console.log(predictResponse);
+                    let predictions = predictResponse.data.predictions;
+
+                    console.log('predictions done');
+                    Swal(predictions + ' predictions are imported, refresh the page to see them');
+                  });
+                  // store.invokeAction(action.id, { body });
                 }
                 else {
                   Swal(`All Gpus are occupied, your prediciton didn't start`);
                 }
+              }).catch((error) => {
+                console.log(error);
               });
           }
           else {
