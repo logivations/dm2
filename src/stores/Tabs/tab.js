@@ -143,8 +143,6 @@ export const Tab = types
           type: el.filter.currentType,
         };
 
-        console.log({ filterItem });
-
         filterItem.value = normalizeFilterValue(
           filterItem.type,
           filterItem.operator,
@@ -388,6 +386,14 @@ export const Tab = types
           const snapshot = self.serialize();
 
           self.key = self.parent.snapshotToUrl(snapshot);
+
+          const projectId = self.root.SDK.projectId;
+
+          // Save the virtual tab of the project to local storage to persist between page navigations
+          if (projectId) {
+            localStorage.setItem(`virtual-tab-${projectId}`, JSON.stringify(snapshot));
+          }
+
           History.navigate({ tab: self.key }, true);
           self.reload({ interaction });
         } else {

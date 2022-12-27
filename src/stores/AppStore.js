@@ -9,6 +9,14 @@ import { DynamicModel, registerModel } from "./DynamicModel";
 import { TabStore } from "./Tabs";
 import { CustomJSON } from "./types";
 import { User } from "./Users";
+import { ActivityObserver } from "../utils/ActivityObserver";
+
+/**
+ * @type {ActivityObserver | null}
+ */
+let networkActivity = null;
+
+const PROJECTS_FETCH_PERIOD = 10 * 1000; // 10 seconds
 
 export const AppStore = types
   .model("AppStore", {
@@ -134,16 +142,22 @@ export const AppStore = types
       if (self.SDK.polling === false) return;
 
       const poll = async (self) => {
-        await self.fetchProject({ interaction: "timer" });
-        self._poll = setTimeout(() => poll(self), 10000);
+        if (networkActivity.active) await self.fetchProject({ interaction: "timer" });
+        self._poll = setTimeout(() => poll(self), PROJECTS_FETCH_PERIOD);
       };
 
       poll(self);
     },
 
+    afterCreate() {
+      networkActivity?.destroy();
+      networkActivity = new ActivityObserver();
+    },
+
     beforeDestroy() {
       clearTimeout(self._poll);
       window.removeEventListener("popstate", self.handlePopState);
+      networkActivity.destroy();
     },
 
     setMode(mode) {
@@ -186,7 +200,7 @@ export const AppStore = types
 
     setTask: flow(function* ({ taskID, annotationID, pushState }) {
       if (pushState !== false) {
-        History.navigate({ task: taskID, annotation: annotationID ?? null });
+        History.navigate({ task: taskID, annotation: annotationID ?? null, interaction: null });
       }
 
       if (!isDefined(taskID)) return;
@@ -461,13 +475,17 @@ export const AppStore = types
         self.fetchUsers(),
       ];
 
-      if (!isLabelStream) {
+      if (!isLabelStream || (self.project?.show_annotation_history && task)) {
         requests.push(self.fetchActions());
 
-        if (!self.SDK.settings?.onlyVirtualTabs) {
-          requests.push(self.viewsStore.fetchTabs(tab, task, labeling));
+        if (self.SDK.settings?.onlyVirtualTabs && (self.project?.show_annotation_history && !task)) {
+          requests.push(self.viewsStore.addView({
+            virtual: true,
+            projectId: self.SDK.projectId,
+            tab,
+          }, { autosave: false, reload: false }));
         } else {
-          requests.push(self.viewsStore.addView({ virtual: true }, { autosave: false }));
+          requests.push(self.viewsStore.fetchTabs(tab, task, labeling));
         }
       } else if (isLabelStream && !!tab) {
         const { selectedItems } = JSON.parse(decodeURIComponent(query ?? "{}"));

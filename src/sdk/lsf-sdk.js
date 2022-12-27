@@ -11,7 +11,7 @@
  * interfacesModifier: function,
  * }} LSFOptions */
 
-import { FF_DEV_2186, FF_DEV_2887, FF_DEV_3034, isFF } from "../utils/feature-flags";
+import { FF_DEV_1752, FF_DEV_2186, FF_DEV_2715, FF_DEV_2887, FF_DEV_3034, FF_DEV_3734, isFF } from "../utils/feature-flags";
 import { isDefined } from "../utils/utils";
 import { Modal } from "../components/Common/Modal/Modal";
 import { CommentsSdk } from "./comments-sdk";
@@ -78,8 +78,10 @@ export class LSFWrapper {
    */
   constructor(dm, element, options) {
     this.datamanager = dm;
+    this.store = dm.store;
     this.root = element;
     this.task = options.task;
+    this.preload = options.preload;
     this.labelStream = options.isLabelStream ?? false;
     this.initialAnnotation = options.annotation;
     this.interfacesModifier = options.interfacesModifier;
@@ -130,7 +132,24 @@ export class LSFWrapper {
       interfaces.push("annotations:comments");
     }
 
+    console.group("Interfaces");
+    console.log([...interfaces]);
+
+    if (!this.shouldLoadNext()) {
+      interfaces = interfaces.filter((item) => {
+        return ![
+          "topbar:prevnext",
+          "skip",
+        ].includes(item);
+      });
+    }
+
+    console.log([...interfaces]);
+    console.groupEnd();
+
     const lsfProperties = {
+      // ensure that we are able to distinguish at component level if the app has fully hydrated.
+      hydrated: false,
       user: options.user,
       config: this.lsfConfig,
       task: taskToLSFormat(this.task),
@@ -167,7 +186,6 @@ export class LSFWrapper {
     try {
       const LSF = await resolveLabelStudio();
 
-      this.globalLSF = window.LabelStudio === LSF;
       this.lsfInstance = new LSF(this.root, settings);
 
       const names = Array.from(this.datamanager.callbacks.keys())
@@ -190,6 +208,41 @@ export class LSFWrapper {
   }
 
   /** @private */
+  async preloadTask() {
+    const {
+      comment: commentId,
+      task: taskID,
+    } = this.preload;
+    const api = this.datamanager.api;
+    let params = { taskID };
+
+    if (commentId) {
+      params.with_comment = commentId;
+    }
+
+    if (params) {
+      const task = await api.call("task", { params });
+      const noData = !task || (!task.annotations?.length && !task.drafts?.length);
+      const body = `Task #${taskID}${commentId ? ` with comment #${commentId}` : ``} was not found!`;
+
+      if (noData) {
+        Modal.modal({
+          title: "Can't find task",
+          body,
+        });
+        return false;
+      }
+
+      // for preload it's good to always load the first one
+      const annotation = task.annotations[0];
+
+      this.selectTask(task, annotation?.id, true);
+    }
+
+    return false;
+  }
+
+  /** @private */
   async loadTask(taskID, annotationID, fromHistory = false) {
     if (!this.lsf) {
       return console.error("Make sure that LSF was properly initialized");
@@ -199,21 +252,24 @@ export class LSFWrapper {
       const tasks = this.datamanager.store.taskStore;
 
       const newTask = await this.withinLoadingState(async () => {
-        if (!isDefined(taskID)) {
-          return tasks.loadNextTask();
-        } else {
-          return tasks.loadTask(taskID);
-        }
-      });
+        let nextTask;
 
-      /* If we're in label stream and there's no task – end the stream */
-      if (this.labelStream && !newTask) {
-        this.lsf.setFlags({ noTask: true });
-        return;
-      } else {
-      // don't break the LSF - if user explores tasks after finishing labeling, show them
-        this.lsf.setFlags({ noTask: false });
-      }
+        if (!isDefined(taskID)) {
+          nextTask = await tasks.loadNextTask();
+        } else {
+          nextTask = await tasks.loadTask(taskID);
+        }
+
+        /**
+         * If we're in label stream and there's no task – end the stream
+         * Otherwise allow user to continue exploring tasks after finished labelling
+         */
+        const noTask = this.labelStream && !nextTask;
+
+        this.lsf.setFlags({ noTask });
+
+        return nextTask;
+      });
 
       // Add new data from received task
       if (newTask) this.selectTask(newTask, annotationID, fromHistory);
@@ -231,7 +287,7 @@ export class LSFWrapper {
       return;
     }
 
-    nextAction();
+    await nextAction();
   }
 
   selectTask(task, annotationID, fromHistory = false) {
@@ -251,18 +307,55 @@ export class LSFWrapper {
 
   setLSFTask(task, annotationID, fromHistory) {
     this.setLoading(true);
+    const hasChangedTasks = this.lsf?.task?.id !== task?.id && task?.id;
     const lsfTask = taskToLSFormat(task);
     const isRejectedQueue = isDefined(task.default_selected_annotation);
+    const taskList = this.datamanager.store.taskStore.list;
+    // annotations are set in LSF only and order in DM only, so combine them
+    const taskHistory = taskList
+      .map(task => this.taskHistory.find(item => item.taskId === task.id))
+      .filter(Boolean);
+
+    const extracted = taskHistory.find(item => item.taskId === task.id);
+
+    if (!fromHistory && extracted) {
+      taskHistory.splice(taskHistory.indexOf(extracted), 1);
+      taskHistory.push(extracted);
+    }
+
+    if (!extracted) {
+      taskHistory.push({ taskId: task.id, annotationId: null });
+    }
 
     if (isRejectedQueue && !annotationID) {
       annotationID = task.default_selected_annotation;
     }
 
-    this.lsf.resetState();
-    this.lsf.assignTask(task);
+    if (hasChangedTasks) {
+      this.lsf.resetState();
+    } else {
+      this.lsf.resetAnnotationStore();
+    }
+
+    // Initial idea to show counter for Manual assignment only
+    // But currently we decided to hide it for any stream
+    // const distribution = this.project.assignment_settings.label_stream_task_distribution;
+    // const isManuallyAssigned = distribution === "assigned_only";
+
+    // undefined or true for backward compatibility
+    this.lsf.toggleInterface("postpone", this.task.allow_postpone !== false);
+    this.lsf.toggleInterface("topbar:task-counter", !isFF(FF_DEV_3734));
+    this.lsf.assignTask(task, taskHistory);
     this.lsf.initializeStore(lsfTask);
     this.setAnnotation(annotationID, fromHistory || isRejectedQueue);
     this.setLoading(false);
+    if (isFF(FF_DEV_2715)) {
+      this.setHydrated(true);
+    }
+  }
+
+  setHydrated(value) {
+    this.lsf.setHydrated?.(value);
   }
 
   /** @private */
@@ -297,6 +390,8 @@ export class LSFWrapper {
           c = cs.addAnnotation({
             draft: draft.result,
             userGenerate: true,
+            comment_count: draft.comment_count,
+            unresolved_comment_count: draft.unresolved_comment_count,
             createdBy: draft.created_username,
             createdAgo: draft.created_ago,
             createdDate: draft.created_at,
@@ -307,10 +402,10 @@ export class LSFWrapper {
         c.setDraftId(draft.id);
         c.setDraftSaved(draft.created_at);
         c.history.safeUnfreeze();
+        c.history.reinit();
       }
     }
-
-    const first = this.annotations[0];
+    const first = this.annotations?.length ? this.annotations[0] : null;
     // if we have annotations created automatically, we don't need to create another one
     // automatically === created here and haven't saved yet, so they don't have pk
     // @todo because of some weird reason pk may be string uid, so check flags then
@@ -398,11 +493,17 @@ export class LSFWrapper {
     this.datamanager.invoke("labelStudioLoad", ls);
     this.lsf = ls;
 
+    if (!this.lsf.task) this.setLoading(true);
+
     await this.loadUserLabels();
 
-    if (this.labelStream) {
+    if (this.canPreloadTask && isFF(FF_DEV_1752)) {
+      await this.preloadTask();
+    } else if (this.labelStream) {
       await this.loadTask();
     }
+
+    this.setLoading(false);
   };
 
   /** @private */
@@ -425,7 +526,7 @@ export class LSFWrapper {
   onSubmitAnnotation = async () => {
     await this.submitCurrentAnnotation("submitAnnotation", async (taskID, body) => {
       return await this.datamanager.apiCall("submitAnnotation", { taskID }, { body });
-    });
+    }, false, this.shouldLoadNext());
   };
 
   /** @private */
@@ -550,6 +651,7 @@ export class LSFWrapper {
         }
       },
       true,
+      this.shouldLoadNext(),
     );
   };
 
@@ -598,13 +700,21 @@ export class LSFWrapper {
     this.datamanager.invoke("unskipTask");
   };
 
+  shouldLoadNext = () => {
+    if (!this.labelStream) return false;
+
+    // validating if URL is from notification, in case of notification it shouldn't load next task
+    const urlParam = new URLSearchParams(location.search).get('interaction');
+
+    return urlParam !== 'notifications';
+  }
+
   // Proxy events that are unused by DM integration
   onEntityCreate = (...args) => this.datamanager.invoke("onEntityCreate", ...args);
   onEntityDelete = (...args) => this.datamanager.invoke("onEntityDelete", ...args);
   onSelectAnnotation = (prevAnnotation, nextAnnotation, options) => {
     this.datamanager.invoke("onSelectAnnotation", prevAnnotation, nextAnnotation, options, this);
   }
-
 
   onNextTask = (nextTaskId, nextAnnotationId) => {
     console.log(nextTaskId, nextAnnotationId);
@@ -697,6 +807,7 @@ export class LSFWrapper {
 
   destroy() {
     this.lsfInstance?.destroy?.();
+    this.lsfInstance = null;
   }
 
   get taskID() {
@@ -704,7 +815,7 @@ export class LSFWrapper {
   }
 
   get taskHistory() {
-    return this.lsf.annotationStore.taskHistory;
+    return this.lsf.taskHistory;
   }
 
   get currentAnnotation() {
@@ -736,5 +847,9 @@ export class LSFWrapper {
   /** @returns {string|null} */
   get instruction() {
     return (this.project.instruction ?? this.project.expert_instruction ?? "").trim() || null;
+  }
+
+  get canPreloadTask() {
+    return Boolean(this.preload?.interaction);
   }
 }
