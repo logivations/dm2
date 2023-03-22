@@ -35,6 +35,7 @@
  * panels?: Record<string, any>[]
  * spinner?: import("react").ReactNode
  * apiTransform?: Record<string, Record<string, Function>
+ * tabControls?: { add?: boolean, delete?: boolean, edit?: boolean, duplicate?: boolean },
  * }} DMConfig
  */
 
@@ -124,6 +125,19 @@ export class DataManager {
   instruments = new Map();
 
   /**
+   * @type {DMConfig.tabControls}
+   */
+  tabControls = {
+    add: true,
+    delete: true,
+    edit: true,
+    duplicate: true,
+  }
+
+  /** @type {"dm" | "labelops"} */
+  type = "dm";
+
+  /**
    * Constructor
    * @param {DMConfig} config
    */
@@ -171,6 +185,8 @@ export class DataManager {
       }),
     );
 
+    Object.assign(this.tabControls, config.tabControls ?? {});
+
     if (config.actions) {
       config.actions.forEach(([action, callback]) => {
         if (!isDefined(action.id)) {
@@ -179,6 +195,8 @@ export class DataManager {
         this.actions.set(action.id, { action, callback });
       });
     }
+
+    this.type = config.type ?? "dm";
 
     this.initApp();
   }

@@ -22,6 +22,7 @@ export const create = (columns) => {
     // annotation to select on rejected queue
     default_selected_annotation: types.maybeNull(types.number),
     allow_postpone: types.maybeNull(types.boolean),
+    unique_lock_id: types.maybeNull(types.string),
     updated_by: types.optional(types.array(Assignee), []),
   })
     .views((self) => ({
@@ -100,6 +101,18 @@ export const create = (columns) => {
     },
   })
     .actions((self) => ({
+      loadTaskHistory: flow(function* (props) {
+        let taskHistory = yield self.root.apiCall("taskHistory", props);
+
+        taskHistory = taskHistory.map((task) => {
+          return {
+            taskId: task.taskId,
+            annotationId: task.annotationId?.toString(),
+          };
+        });
+
+        return taskHistory;
+      }),
       loadTask: flow(function* (taskID, { select = true } = {}) {
         if (!isDefined(taskID)) {
           console.warn("Task ID must be provided");

@@ -421,11 +421,19 @@ export const AppStore = types
     fetchProject: flow(function* (options = {}) {
       self.projectFetch = options.force === true;
 
-      const oldProject = JSON.stringify(self.project ?? {});
+      const isTimer = options.interaction === "timer";
       const params =
         options && options.interaction
           ? {
             interaction: options.interaction,
+            ...(isTimer ? ({
+              include: [
+                "task_count",
+                "task_number",
+                "annotation_count",
+                "num_tasks_with_annotations",
+              ].join(","),
+            }) : null),
           }
           : null;
 
@@ -440,7 +448,9 @@ export const AppStore = types
           self.project.num_tasks_with_annotations !== newProject.num_tasks_with_annotations
         ) : false;
 
-        if (JSON.stringify(newProject ?? {}) !== oldProject) {
+        if (options.interaction === "timer") {
+          self.project = Object.assign(self.project ?? {}, newProject);
+        } else if (JSON.stringify(newProject ?? {}) !== JSON.stringify(self.project ?? {})) {
           self.project = newProject;
         }
       } catch {
@@ -476,14 +486,22 @@ export const AppStore = types
       ];
 
       if (!isLabelStream || (self.project?.show_annotation_history && task)) {
-        requests.push(self.fetchActions());
+        if(self.SDK.type === 'dm') {
+          requests.push(self.fetchActions()); 
+        }
 
-        if (self.SDK.settings?.onlyVirtualTabs && (self.project?.show_annotation_history && !task)) {
+        if (self.SDK.settings?.onlyVirtualTabs && self.project?.show_annotation_history && !task) {
           requests.push(self.viewsStore.addView({
             virtual: true,
             projectId: self.SDK.projectId,
             tab,
           }, { autosave: false, reload: false }));
+        } else if (self.SDK.type === 'labelops') {
+          requests.push(self.viewsStore.addView({
+            virtual: false,
+            projectId: self.SDK.projectId,
+            tab,
+          }, { autosave: false, autoSelect: true, reload: true }));
         } else {
           requests.push(self.viewsStore.fetchTabs(tab, task, labeling));
         }
@@ -504,7 +522,17 @@ export const AppStore = types
       }
     }),
 
-    apiCall: flow(function* (methodName, params, body) {
+    /**
+     * Main API calls provider for the whole application.
+     * `params` are used both for var substitution and query params if var is unknown:
+     * `{ project: 123, order: "desc" }` for method `"tasks": "/project/:pk/tasks"`
+     * will produce `/project/123/tasks?order=desc` url
+     * @param {string} methodName one of the methods in api-config
+     * @param {object} params url vars and query string params
+     * @param {object} body for POST/PATCH requests
+     * @param {{ errorHandler?: fn }} [options] additional options like errorHandler
+     */
+    apiCall: flow(function* (methodName, params, body, options) {
       const apiTransform = self.SDK.apiTransform?.[methodName];
       const requestParams = apiTransform?.params?.(params) ?? params ?? {};
       const requestBody = apiTransform?.body?.(body) ?? body ?? undefined;
@@ -512,6 +540,10 @@ export const AppStore = types
       let result = yield self.API[methodName](requestParams, requestBody);
 
       if (result.error && result.status !== 404) {
+        if (options?.errorHandler?.(result)) {
+          return result;
+        }
+
         if (result.response) {
           self.serverError.set(methodName, {
             error: "Something went wrong",
