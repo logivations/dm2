@@ -4,7 +4,7 @@ import { useCallback, useMemo } from "react";
 import { FaQuestionCircle } from "react-icons/fa";
 import { useShortcut } from "../../../sdk/hotkeys";
 import { Block, Elem } from "../../../utils/bem";
-import { FF_DEV_2536, FF_DEV_4008, isFF } from '../../../utils/feature-flags';
+import { FF_DEV_2536, FF_DEV_4008, FF_OPTIC_2, isFF } from '../../../utils/feature-flags';
 import * as CellViews from "../../CellViews";
 import { Icon } from "../../Common/Icon/Icon";
 import { ImportButton } from "../../Common/SDKButtons";
@@ -14,6 +14,7 @@ import { Tag } from "../../Common/Tag/Tag";
 import { Tooltip } from "../../Common/Tooltip/Tooltip";
 import { GridView } from "../GridViewOld/GridView";
 import "./Table.styl";
+import { Button } from "../../Common/Button/Button";
 
 const injector = inject(({ store }) => {
   const { dataStore, currentView } = store;
@@ -32,7 +33,7 @@ const injector = inject(({ store }) => {
     total: dataStore?.total ?? 0,
     isLoading: dataStore?.loading ?? true,
     isLocked: currentView?.locked ?? false,
-    hasData: (store.project?.task_count ?? store.project?.task_number ?? 0) > 0,
+    hasData: (store.project?.task_count ?? store.project?.task_number ?? dataStore?.total ?? 0) > 0,
     focusedItem: dataStore?.selected ?? dataStore?.highlighted,
   };
 
@@ -60,10 +61,11 @@ export const DataView = injector(
       return props.focusedItem;
     }, [props.focusedItem]);
 
-    const loadMore = useCallback(() => {
-      if (!dataStore.hasNextPage || dataStore.loading) return;
+    const loadMore = useCallback(async () => {
+      if (!dataStore.hasNextPage || dataStore.loading) return Promise.resolve();
 
-      dataStore.fetch({ interaction: "scroll" });
+      await dataStore.fetch({ interaction: "scroll" });
+      return Promise.resolve();
     }, [dataStore]);
 
     const isItemLoaded = useCallback(
@@ -112,14 +114,19 @@ export const DataView = injector(
     ]);
 
     const onRowClick = useCallback(
-      (item, e) => {
-        if (e.metaKey || e.ctrlKey) {
-          window.open(`./?task=${item.task_id ?? item.id}`, "_blank");
+      async (item, e) => {
+        const itemID = item.task_id ?? item.id;
+
+        if (store.SDK.type === 'DE') {
+          store.SDK.invoke('recordPreview', item, columns, getRoot(view).taskStore.associatedList);
+        } else if (e.metaKey || e.ctrlKey) {
+          window.open(`./?task=${itemID}`, "_blank");
         } else {
+          if (isFF(FF_OPTIC_2)) await store._sdk.lsf?.saveDraft();
           getRoot(view).startLabeling(item);
         }
       },
-      [view],
+      [view, columns],
     );
 
     const renderContent = useCallback(
@@ -128,6 +135,17 @@ export const DataView = injector(
           return (
             <Block name="fill-container">
               <Spinner size="large" />
+            </Block>
+          );
+        } else if (store.SDK.type === 'DE' && (total === 0 || !hasData)) {
+          return (
+            <Block name="syncInProgress">
+              <Elem name='title' tag="h3">Hang tight! Items are syncing in the background</Elem>
+              <Elem name='text'>Press the button below to see any synced items</Elem>
+              <Button onClick={async () => {
+                await store.fetchProject({ force: true, interaction: 'refresh' });
+                await store.currentView?.reload();
+              }}>Refresh</Button>
             </Block>
           );
         } else if (total === 0 || !hasData) {
